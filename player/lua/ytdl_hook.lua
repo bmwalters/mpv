@@ -229,6 +229,103 @@ local function set_cookies(cookies)
     mp.set_property_native(option_key, stream_opts)
 end
 
+local function base64_encode(str)
+    local b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local result = {}
+    for i = 1, #str, 3 do
+        local b1, b2, b3 = str:byte(i, i + 2)
+        local n = b1 * 65536 + (b2 or 0) * 256 + (b3 or 0)
+        result[#result + 1] = b64:sub(math.floor(n / 262144) % 64 + 1,
+                                      math.floor(n / 262144) % 64 + 1)
+        result[#result + 1] = b64:sub(math.floor(n / 4096) % 64 + 1,
+                                      math.floor(n / 4096) % 64 + 1)
+        result[#result + 1] = b2 and b64:sub(math.floor(n / 64) % 64 + 1,
+                                             math.floor(n / 64) % 64 + 1) or '='
+        result[#result + 1] = b3 and b64:sub(n % 64 + 1, n % 64 + 1) or '='
+    end
+    return table.concat(result)
+end
+
+local function hex_to_raw(hex)
+    return hex:gsub('..', function(h)
+        return string.char(tonumber(h, 16))
+    end)
+end
+
+-- Compute the base URL for resolving relative URLs in an m3u8 playlist.
+-- Strips query/fragment and the final path component.
+local function m3u8_base_url(url)
+    local base = url:gsub('[?#].*$', '')  -- strip query and fragment
+    return base:gsub('/[^/]*$', '/')      -- strip filename, keep trailing /
+end
+
+-- Rewrite an m3u8 playlist to embed a pre-fetched HLS AES-128 key and
+-- resolve relative URLs, so that the result can be served as a data: URL.
+-- Returns (data_url, true) on success, or (original_url, false) if
+-- rewriting is not needed or not possible.
+local function rewrite_m3u8_with_hls_aes(url, m3u8_data, hls_aes)
+    if not hls_aes or not m3u8_data then
+        return url, false
+    end
+
+    local key_hex = hls_aes.key
+    local key_uri = hls_aes.uri
+    local iv_hex = hls_aes.iv
+
+    -- Need either a pre-fetched key or an alternative URI to rewrite
+    if not key_hex and not key_uri then
+        return url, false
+    end
+
+    local new_key_uri
+    if key_hex then
+        new_key_uri = "data:application/octet-stream;base64," ..
+                      base64_encode(hex_to_raw(key_hex))
+    else
+        new_key_uri = key_uri
+    end
+
+    local base = m3u8_base_url(url)
+    local lines = {}
+
+    for line in (m3u8_data .. "\n"):gmatch("(.-)\n") do
+        if line:match('^#EXT%-X%-KEY:') then
+            -- Replace the key URI
+            line = line:gsub('URI="[^"]*"', 'URI="' .. new_key_uri .. '"')
+            -- Add or replace IV if provided
+            if iv_hex then
+                if line:match('IV=') then
+                    line = line:gsub('IV=0[xX]%x+', 'IV=0x' .. iv_hex)
+                else
+                    line = line .. ',IV=0x' .. iv_hex
+                end
+            end
+        elseif line:match('^#EXT%-X%-MAP:') then
+            -- Make EXT-X-MAP URI absolute
+            line = line:gsub('URI="([^"]*)"', function(map_uri)
+                if not map_uri:match('^https?://') then
+                    map_uri = base .. map_uri
+                end
+                return 'URI="' .. map_uri .. '"'
+            end)
+        elseif line ~= "" and not line:match('^#') then
+            -- Segment URL: make absolute if relative
+            if not line:match('^https?://') then
+                line = base .. line
+            end
+        end
+        lines[#lines + 1] = line
+    end
+
+    local rewritten = table.concat(lines, "\n")
+    msg.debug("Rewrote m3u8 with embedded HLS AES key")
+    -- Use data:// (not data:) so mpv routes through its data protocol
+    -- handler instead of the file handler, which would fail with
+    -- "File name too long" on the base64-encoded URL.
+    return "data://application/vnd.apple.mpegurl;base64," ..
+           base64_encode(rewritten), true
+end
+
 local function append_libav_opt(props, name, value)
     if not props then
         props = {}
@@ -533,6 +630,11 @@ local function formats_to_edl(json, formats, use_all_formats)
         end
 
         local url = edl_track or track.url
+
+        -- Embed pre-fetched HLS AES-128 key into the m3u8 data if available
+        url = rewrite_m3u8_with_hls_aes(url,
+            track.hls_media_playlist_data, track.hls_aes)
+
         local hdr = {"!new_stream", "!no_clip", "!no_chapters"}
         local skip = #tracks == 0
         local params = ""
@@ -701,6 +803,15 @@ local function add_single_video(json)
         end
         -- normal video or single track
         streamurl = edl_track or json.url
+
+        -- Embed pre-fetched HLS AES-128 key into the m3u8 data if available
+        local hls_aes = has_requested_formats
+                        and requested_formats[1].hls_aes
+                        or json.hls_aes
+        local hls_m3u8 = has_requested_formats
+                         and requested_formats[1].hls_media_playlist_data
+                         or json.hls_media_playlist_data
+        streamurl = rewrite_m3u8_with_hls_aes(streamurl, hls_m3u8, hls_aes)
     end
 
     if streamurl == "" then
