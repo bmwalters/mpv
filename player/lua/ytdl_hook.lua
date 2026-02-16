@@ -229,12 +229,6 @@ local function set_cookies(cookies)
     mp.set_property_native(option_key, stream_opts)
 end
 
-local function hex_to_raw(hex)
-    return hex:gsub('..', function(h)
-        return string.char(tonumber(h, 16))
-    end)
-end
-
 local function append_libav_opt(props, name, value)
     if not props then
         props = {}
@@ -397,8 +391,11 @@ local function rewrite_m3u8_with_hls_aes(url, m3u8_data, hls_aes)
 
     local new_key_uri
     if key_hex then
+        local key_raw = key_hex:gsub('..', function(h)
+            return string.char(tonumber(h, 16))
+        end)
         new_key_uri = "data:application/octet-stream;base64," ..
-                      utils.base64_encode(hex_to_raw(key_hex))
+                      utils.base64_encode(key_raw)
     else
         new_key_uri = key_uri
     end
