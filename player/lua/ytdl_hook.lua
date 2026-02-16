@@ -235,80 +235,6 @@ local function hex_to_raw(hex)
     end)
 end
 
--- Compute the base URL for resolving relative URLs in an m3u8 playlist.
--- Strips query/fragment and the final path component.
-local function m3u8_base_url(url)
-    local base = url:gsub('[?#].*$', '')  -- strip query and fragment
-    return base:gsub('/[^/]*$', '/')      -- strip filename, keep trailing /
-end
-
--- Rewrite an m3u8 playlist to embed a pre-fetched HLS AES-128 key and
--- resolve relative URLs, so that the result can be served as a data: URL.
--- Returns (data_url, true) on success, or (original_url, false) if
--- rewriting is not needed or not possible.
-local function rewrite_m3u8_with_hls_aes(url, m3u8_data, hls_aes)
-    if not hls_aes or not m3u8_data then
-        return url, false
-    end
-
-    local key_hex = hls_aes.key
-    local key_uri = hls_aes.uri
-    local iv_hex = hls_aes.iv
-
-    -- Need either a pre-fetched key or an alternative URI to rewrite
-    if not key_hex and not key_uri then
-        return url, false
-    end
-
-    local new_key_uri
-    if key_hex then
-        new_key_uri = "data:application/octet-stream;base64," ..
-                      utils.base64_encode(hex_to_raw(key_hex))
-    else
-        new_key_uri = key_uri
-    end
-
-    local base = m3u8_base_url(url)
-    local lines = {}
-
-    for line in (m3u8_data .. "\n"):gmatch("(.-)\n") do
-        if line:match('^#EXT%-X%-KEY:') then
-            -- Replace the key URI
-            line = line:gsub('URI="[^"]*"', 'URI="' .. new_key_uri .. '"')
-            -- Add or replace IV if provided
-            if iv_hex then
-                if line:match('IV=') then
-                    line = line:gsub('IV=0[xX]%x+', 'IV=0x' .. iv_hex)
-                else
-                    line = line .. ',IV=0x' .. iv_hex
-                end
-            end
-        elseif line:match('^#EXT%-X%-MAP:') then
-            -- Make EXT-X-MAP URI absolute
-            line = line:gsub('URI="([^"]*)"', function(map_uri)
-                if not map_uri:match('^https?://') then
-                    map_uri = base .. map_uri
-                end
-                return 'URI="' .. map_uri .. '"'
-            end)
-        elseif line ~= "" and not line:match('^#') then
-            -- Segment URL: make absolute if relative
-            if not line:match('^https?://') then
-                line = base .. line
-            end
-        end
-        lines[#lines + 1] = line
-    end
-
-    local rewritten = table.concat(lines, "\n")
-    msg.debug("Rewrote m3u8 with embedded HLS AES key")
-    -- Use data:// (not data:) so mpv routes through its data protocol
-    -- handler instead of the file handler, which would fail with
-    -- "File name too long" on the base64-encoded URL.
-    return "data://application/vnd.apple.mpegurl;base64," ..
-           utils.base64_encode(rewritten), true
-end
-
 local function append_libav_opt(props, name, value)
     if not props then
         props = {}
@@ -442,6 +368,77 @@ local function join_url(base_url, fragment)
         res = fragment.url
     end
     return res
+end
+
+-- Compute the base URL for resolving relative URLs in an m3u8 playlist.
+-- Strips query/fragment and the final path component.
+local function m3u8_base_url(url)
+    local base = url:gsub('[?#].*$', '')  -- strip query and fragment
+    return base:gsub('/[^/]*$', '/')      -- strip filename, keep trailing /
+end
+
+-- Rewrite an m3u8 playlist to embed a pre-fetched HLS AES-128 key and
+-- resolve relative URLs, so that the result can be served as a data: URL.
+-- Returns (data_url, true) on success, or (original_url, false) if
+-- rewriting is not needed or not possible.
+local function rewrite_m3u8_with_hls_aes(url, m3u8_data, hls_aes)
+    if not hls_aes or not m3u8_data then
+        return url, false
+    end
+
+    local key_hex = hls_aes.key
+    local key_uri = hls_aes.uri
+    local iv_hex = hls_aes.iv
+
+    -- Need either a pre-fetched key or an alternative URI to rewrite
+    if not key_hex and not key_uri then
+        return url, false
+    end
+
+    local new_key_uri
+    if key_hex then
+        new_key_uri = "data:application/octet-stream;base64," ..
+                      utils.base64_encode(hex_to_raw(key_hex))
+    else
+        new_key_uri = key_uri
+    end
+
+    local base = m3u8_base_url(url)
+    local lines = {}
+
+    for line in (m3u8_data .. "\n"):gmatch("(.-)\n") do
+        if line:match('^#EXT%-X%-KEY:') then
+            -- Replace the key URI
+            line = line:gsub('URI="[^"]*"', 'URI="' .. new_key_uri .. '"')
+            -- Add or replace IV if provided
+            if iv_hex then
+                if line:match('IV=') then
+                    line = line:gsub('IV=0[xX]%x+', 'IV=0x' .. iv_hex)
+                else
+                    line = line .. ',IV=0x' .. iv_hex
+                end
+            end
+        elseif line:match('^#EXT%-X%-MAP:') then
+            -- Make EXT-X-MAP URI absolute
+            line = line:gsub('URI="([^"]*)"', function(map_uri)
+                if not map_uri:match('^https?://') then
+                    map_uri = base .. map_uri
+                end
+                return 'URI="' .. map_uri .. '"'
+            end)
+        elseif line ~= "" and not line:match('^#') then
+            -- Segment URL: make absolute if relative
+            if not line:match('^https?://') then
+                line = base .. line
+            end
+        end
+        lines[#lines + 1] = line
+    end
+
+    local rewritten = table.concat(lines, "\n")
+    msg.debug("Rewrote m3u8 with embedded HLS AES key")
+    return "data://application/vnd.apple.mpegurl;base64," ..
+           utils.base64_encode(rewritten), true
 end
 
 local function edl_track_joined(fragments, protocol, is_live, base)
