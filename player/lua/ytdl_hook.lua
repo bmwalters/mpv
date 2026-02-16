@@ -229,23 +229,6 @@ local function set_cookies(cookies)
     mp.set_property_native(option_key, stream_opts)
 end
 
-local function base64_encode(str)
-    local b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    local result = {}
-    for i = 1, #str, 3 do
-        local b1, b2, b3 = str:byte(i, i + 2)
-        local n = b1 * 65536 + (b2 or 0) * 256 + (b3 or 0)
-        result[#result + 1] = b64:sub(math.floor(n / 262144) % 64 + 1,
-                                      math.floor(n / 262144) % 64 + 1)
-        result[#result + 1] = b64:sub(math.floor(n / 4096) % 64 + 1,
-                                      math.floor(n / 4096) % 64 + 1)
-        result[#result + 1] = b2 and b64:sub(math.floor(n / 64) % 64 + 1,
-                                             math.floor(n / 64) % 64 + 1) or '='
-        result[#result + 1] = b3 and b64:sub(n % 64 + 1, n % 64 + 1) or '='
-    end
-    return table.concat(result)
-end
-
 local function hex_to_raw(hex)
     return hex:gsub('..', function(h)
         return string.char(tonumber(h, 16))
@@ -280,7 +263,7 @@ local function rewrite_m3u8_with_hls_aes(url, m3u8_data, hls_aes)
     local new_key_uri
     if key_hex then
         new_key_uri = "data:application/octet-stream;base64," ..
-                      base64_encode(hex_to_raw(key_hex))
+                      utils.base64_encode(hex_to_raw(key_hex))
     else
         new_key_uri = key_uri
     end
@@ -323,7 +306,7 @@ local function rewrite_m3u8_with_hls_aes(url, m3u8_data, hls_aes)
     -- handler instead of the file handler, which would fail with
     -- "File name too long" on the base64-encoded URL.
     return "data://application/vnd.apple.mpegurl;base64," ..
-           base64_encode(rewritten), true
+           utils.base64_encode(rewritten), true
 end
 
 local function append_libav_opt(props, name, value)

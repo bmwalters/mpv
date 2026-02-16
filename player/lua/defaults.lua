@@ -792,6 +792,26 @@ function mp_utils.format_bytes_humanized(b)
     return string.format("%0.2f %s", b, d[i] and d[i] or "*1024^" .. (i-1))
 end
 
+function mp_utils.base64_encode(str)
+    local b64 = {
+        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+        "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "/",
+    }
+    local result = {}
+    for i = 1, #str, 3 do
+        local b1, b2, b3 = str:byte(i, i + 2)
+        local n = b1 * 65536 + (b2 or 0) * 256 + (b3 or 0)
+        result[#result + 1] = b64[math.floor(n / 262144) % 64 + 1]
+        result[#result + 1] = b64[math.floor(n / 4096) % 64 + 1]
+        result[#result + 1] = b2 and b64[math.floor(n / 64) % 64 + 1] or "="
+        result[#result + 1] = b3 and b64[n % 64 + 1] or "="
+    end
+    return table.concat(result)
+end
+
 function mp_utils.subprocess(t)
     local cmd = {}
     cmd.name = "subprocess"
