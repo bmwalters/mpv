@@ -399,6 +399,9 @@ static int open_f(stream_t *stream)
     } else if (bstr_eatstart0(&b_filename, "davs://") || bstr_eatstart0(&b_filename, "webdavs://"))
     {
         filename = talloc_asprintf(temp, "https://%.*s", BSTR_P(b_filename));
+    } else if (bstr_eatstart0(&b_filename, "data://"))
+    {
+        filename = talloc_asprintf(temp, "data:%.*s", BSTR_P(b_filename));
     }
 
     av_dict_set(&dict, "reconnect", "1", 0);
